@@ -1,655 +1,616 @@
-import { useEffect, useRef, useState } from 'react';
-import * as THREE from 'three';
+import React, { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router";
+import * as THREE from "three";
 
-const TrashSortingGame3D = () => {
-  const containerRef = useRef(null);
-  const [score, setScore] = useState(0);
-  const [lives, setLives] = useState(3);
+/* ===================== CONSTANTS ===================== */
+const PLAYER_CAPACITY = 5;
+const PLAYER_MAX_HP = 3;
+
+const PLAYER_MAX_SPEED = 0.25;
+const PLAYER_ACCELERATION = 0.012;
+const PLAYER_FRICTION = 0.9;
+const PLAYER_TURN_SPEED = 0.045;
+
+const TOTAL_TRASH = 12;
+const OBSTACLE_COUNT = 6;
+const OBSTACLE_DAMAGE_COOLDOWN = 1000;
+
+const AUTO_PICKUP_DISTANCE = 1.2;
+const STORAGE_ZONE_RADIUS = 4;
+
+const GAME_TIME = 60;
+const REQUIRED_PERCENTAGE = 80;
+
+/* ===================== UTILS ===================== */
+const isMobileDevice = () =>
+  /Android|iPhone|iPad|iPod|Opera Mini|IEMobile/i.test(navigator.userAgent);
+
+/* ===================== COMPONENT ===================== */
+export default function RecycleGame() {
+  const navigate = useNavigate();
+  const containerRef = useRef();
+  const gameRef = useRef({});
+
+  const [inventoryCount, setInventoryCount] = useState(0);
+  const [recycledCount, setRecycledCount] = useState(0);
+  const [hp, setHp] = useState(PLAYER_MAX_HP);
+  const [timeLeft, setTimeLeft] = useState(GAME_TIME);
   const [gameOver, setGameOver] = useState(false);
-  const [message, setMessage] = useState('');
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState('');
-  
-  const gameStateRef = useRef({
-    scene: null,
-    camera: null,
-    renderer: null,
-    player: null,
-    trash: [],
-    bins: [],
-    holding: null,
-    keys: {},
-    moveSpeed: 0.15,
-    animationId: null
-  });
+  const [message, setMessage] = useState("");
+  const [isMobile, setIsMobile] = useState(false);
+  const [hudPulse, setHudPulse] = useState(false);
 
+  /* ===================== INIT ===================== */
   useEffect(() => {
-    if (!containerRef.current || gameOver) return;
+    setIsMobile(isMobileDevice());
 
-    try {
-      const state = gameStateRef.current;
-      
-      while (containerRef.current.firstChild) {
-        containerRef.current.removeChild(containerRef.current.firstChild);
-      }
-      
-      // Reset state
-      state.trash = [];
-      state.bins = [];
-      state.holding = null;
-      state.keys = {};
-      
-      // Scene setup
-      state.scene = new THREE.Scene();
-      state.scene.background = new THREE.Color(0x87CEEB);
+    const width = containerRef.current.clientWidth;
+    const height = containerRef.current.clientHeight;
 
-      // Camera setup
-      const width = containerRef.current.clientWidth;
-      const height = 600;
-      state.camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
-      state.camera.position.set(0, 8, 12);
-      state.camera.lookAt(0, 0, 0);
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xa7f3d0);
 
-      // Renderer setup
-      state.renderer = new THREE.WebGLRenderer({ antialias: true });
-      state.renderer.setSize(width, height);
-      state.renderer.shadowMap.enabled = true;
-      containerRef.current.appendChild(state.renderer.domElement);
+    const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
 
-      // Lights
-      const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-      state.scene.add(ambientLight);
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(width, height);
+    renderer.shadowMap.enabled = true;
+    containerRef.current.innerHTML = "";
+    containerRef.current.appendChild(renderer.domElement);
 
-      const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
-      directionalLight.position.set(5, 10, 5);
-      directionalLight.castShadow = true;
-      state.scene.add(directionalLight);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+    dirLight.position.set(10, 20, 10);
+    scene.add(dirLight);
 
-      // Đất
-      const groundGeometry = new THREE.PlaneGeometry(30, 30);
-      const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x90EE90 });
-      const ground = new THREE.Mesh(groundGeometry, groundMaterial);
-      ground.rotation.x = -Math.PI / 2;
-      ground.receiveShadow = true;
-      state.scene.add(ground);
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(100, 100),
+      new THREE.MeshStandardMaterial({ color: 0x86efac })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
 
-      // Grid
-      const gridHelper = new THREE.GridHelper(30, 30, 0x666666, 0x444444);
-      state.scene.add(gridHelper);
+    /* ===== PLAYER ===== */
+    const player = new THREE.Group();
 
-      // Player
-      const playerGeometry = new THREE.SphereGeometry(0.5, 32, 32);
-      const playerMaterial = new THREE.MeshStandardMaterial({ color: 0x8B5CF6 });
-      state.player = new THREE.Mesh(playerGeometry, playerMaterial);
-      state.player.position.y = 0.5;
-      state.player.castShadow = true;
-      state.scene.add(state.player);
+    const makeMesh = (geo, color) =>
+      new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
 
-      // Player eyes
-      const eyeGeometry = new THREE.SphereGeometry(0.1, 16, 16);
-      const eyeMaterial = new THREE.MeshStandardMaterial({ color: 0x000000 });
-      const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
-      leftEye.position.set(-0.2, 0.2, 0.4);
-      state.player.add(leftEye);
-      const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial);
-      rightEye.position.set(0.2, 0.2, 0.4);
-      state.player.add(rightEye);
+    const body = makeMesh(
+      new THREE.CylinderGeometry(0.4, 0.5, 1.4, 8),
+      0x2563eb
+    );
+    body.position.y = 1;
 
-      // rác
-      const binTypes = [
-        { color: 0x3B82F6, position: [-6, 0, -6], type: 'recyclable', name: 'Tái chế' },
-        { color: 0x22C55E, position: [6, 0, -6], type: 'organic', name: 'Hữu cơ' },
-        { color: 0xEF4444, position: [-6, 0, 6], type: 'general', name: 'Rác thải' },
-        { color: 0xF59E0B, position: [6, 0, 6], type: 'hazardous', name: 'Nguy hại' }
-      ];
+    const head = makeMesh(new THREE.SphereGeometry(0.35, 16, 16), 0xfcd34d);
+    head.position.y = 2;
 
-      binTypes.forEach(binType => {
-        const binGroup = new THREE.Group();
-        
-        const binGeometry = new THREE.BoxGeometry(1.5, 2, 1.5);
-        const binMaterial = new THREE.MeshStandardMaterial({ color: binType.color });
-        const bin = new THREE.Mesh(binGeometry, binMaterial);
-        bin.position.y = 1;
-        bin.castShadow = true;
-        binGroup.add(bin);
+    const backpack = makeMesh(new THREE.BoxGeometry(0.5, 0.6, 0.3), 0x14532d);
+    backpack.position.set(0, 1.1, -0.45);
 
-        const lidGeometry = new THREE.BoxGeometry(1.7, 0.2, 1.7);
-        const lid = new THREE.Mesh(lidGeometry, new THREE.MeshStandardMaterial({ color: binType.color }));
-        lid.position.y = 2.1;
-        binGroup.add(lid);
+    const nose = makeMesh(new THREE.ConeGeometry(0.15, 0.4, 8), 0xdc2626);
+    nose.position.set(0, 1.2, 0.6);
+    nose.rotation.x = Math.PI / 2;
 
-        binGroup.position.set(...binType.position);
-        binGroup.userData = { type: binType.type, name: binType.name };
-        state.bins.push(binGroup);
-        state.scene.add(binGroup);
-      });
+    player.add(body, head, backpack, nose);
+    scene.add(player);
 
-      // Trash types
-      const trashTypes = [
-        { color: 0x4169E1, correct: 'recyclable', shape: 'cylinder' },
-        { color: 0xFF6347, correct: 'organic', shape: 'sphere' },
-        { color: 0x696969, correct: 'general', shape: 'box' },
-        { color: 0xFF8C00, correct: 'hazardous', shape: 'cone' }
-      ];
+    /* ===== STORAGE ===== */
+    const storage = makeMesh(new THREE.CylinderGeometry(2, 2, 1, 32), 0x22c55e);
+    storage.position.set(0, 0.5, -15);
+    scene.add(storage);
 
-      const spawnTrash = () => {
-        if (state.trash.length < 8 && !gameOver && lives > 0) {
-          const trashType = trashTypes[Math.floor(Math.random() * trashTypes.length)];
-          let geometry;
-          
-          switch(trashType.shape) {
-            case 'cylinder':
-              geometry = new THREE.CylinderGeometry(0.3, 0.3, 0.8, 16);
-              break;
-            case 'sphere':
-              geometry = new THREE.SphereGeometry(0.4, 16, 16);
-              break;
-            case 'box':
-              geometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
-              break;
-            case 'cone':
-              geometry = new THREE.ConeGeometry(0.4, 0.8, 16);
-              break;
-            default:
-              geometry = new THREE.BoxGeometry(0.6, 0.6, 0.6);
-          }
-
-          const material = new THREE.MeshStandardMaterial({ color: trashType.color });
-          const trash = new THREE.Mesh(geometry, material);
-          
-          const angle = Math.random() * Math.PI * 2;
-          const distance = 5 + Math.random() * 8;
-          trash.position.set(
-            Math.cos(angle) * distance,
-            0.5,
-            Math.sin(angle) * distance
-          );
-          
-          trash.castShadow = true;
-          trash.userData = { 
-            correct: trashType.correct,
-            rotationSpeed: (Math.random() - 0.5) * 0.05
-          };
-          
-          state.trash.push(trash);
-          state.scene.add(trash);
-        }
-      };
-
-      // Spawn initial trash
-      for (let i = 0; i < 5; i++) {
-        setTimeout(() => spawnTrash(), i * 500);
-      }
-      const spawnInterval = setInterval(spawnTrash, 3000);
-
-      // Input handling
-      const handleKeyDown = (e) => {
-        const key = e.key.toLowerCase();
-        state.keys[key] = true;
-        
-        if (key === ' ') {
-          e.preventDefault();
-          
-          if (!state.holding) {
-            let nearest = null;
-            let minDist = 2;
-            
-            state.trash.forEach(trash => {
-              const dist = state.player.position.distanceTo(trash.position);
-              if (dist < minDist) {
-                minDist = dist;
-                nearest = trash;
-              }
-            });
-            
-            if (nearest) {
-              state.holding = nearest;
-              state.trash = state.trash.filter(t => t !== nearest);
-              setMessage(' Đã nhặt rác!');
-            }
-          } else {
-            let dropped = false;
-            state.bins.forEach(bin => {
-              const dist = state.player.position.distanceTo(bin.position);
-              if (dist < 2.5) {
-                dropped = true;
-                const correct = state.holding.userData.correct === bin.userData.type;
-                
-                if (correct) {
-                  setScore(s => s + 10);
-                  setMessage(`✓ Đúng! +10 điểm`);
-                } else {
-                  setScore(s => Math.max(0, s - 5));
-                  setLives(l => {
-                    const newLives = l - 1;
-                    if (newLives <= 0) setGameOver(true);
-                    return newLives;
-                  });
-                  setMessage(`✗ Sai! -5 điểm`);
-                }
-                
-                state.scene.remove(state.holding);
-                state.holding = null;
-              }
-            });
-            
-            if (!dropped) {
-              setMessage('Gần thùng để thả!');
-            }
-          }
-        }
-      };
-
-      const handleKeyUp = (e) => {
-        state.keys[e.key.toLowerCase()] = false;
-      };
-
-      document.addEventListener('keydown', handleKeyDown);
-      document.addEventListener('keyup', handleKeyUp);
-
-      // Animation loop
-      const animate = () => {
-        const moveVector = new THREE.Vector3();
-        
-        if (state.keys['w'] || state.keys['arrowup']) moveVector.z -= state.moveSpeed;
-        if (state.keys['s'] || state.keys['arrowdown']) moveVector.z += state.moveSpeed;
-        if (state.keys['a'] || state.keys['arrowleft']) moveVector.x -= state.moveSpeed;
-        if (state.keys['d'] || state.keys['arrowright']) moveVector.x += state.moveSpeed;
-
-        state.player.position.add(moveVector);
-        state.player.position.x = Math.max(-14, Math.min(14, state.player.position.x));
-        state.player.position.z = Math.max(-14, Math.min(14, state.player.position.z));
-
-        if (moveVector.length() > 0) {
-          state.player.rotation.y = Math.atan2(moveVector.x, moveVector.z);
-        }
-
-        state.camera.position.x = state.player.position.x;
-        state.camera.position.z = state.player.position.z + 12;
-        state.camera.lookAt(state.player.position);
-
-        state.trash.forEach(trash => {
-          trash.rotation.y += trash.userData.rotationSpeed;
-          trash.position.y = 0.5 + Math.sin(Date.now() * 0.001 + trash.position.x) * 0.1;
-        });
-
-        if (state.holding) {
-          state.holding.position.copy(state.player.position);
-          state.holding.position.y = 2;
-          state.holding.rotation.y += 0.05;
-        }
-
-        state.bins.forEach(bin => {
-          const dist = state.player.position.distanceTo(bin.position);
-          if (dist < 2.5 && state.holding) {
-            bin.children[0].material.emissive = new THREE.Color(0xFFD700);
-            bin.children[0].material.emissiveIntensity = 0.3;
-          } else {
-            bin.children[0].material.emissive = new THREE.Color(0x000000);
-            bin.children[0].material.emissiveIntensity = 0;
-          }
-        });
-
-        state.renderer.render(state.scene, state.camera);
-        state.animationId = requestAnimationFrame(animate);
-      };
-
-      animate();
-      setIsLoading(false);
-
-      // Cleanup
-      return () => {
-        clearInterval(spawnInterval);
-        document.removeEventListener('keydown', handleKeyDown);
-        document.removeEventListener('keyup', handleKeyUp);
-        if (state.animationId) cancelAnimationFrame(state.animationId);
-        
-        // Dispose Three.js objects
-        state.trash.forEach(trash => {
-          trash.geometry?.dispose();
-          trash.material?.dispose();
-          state.scene?.remove(trash);
-        });
-        state.bins.forEach(bin => {
-          bin.children.forEach(child => {
-            child.geometry?.dispose();
-            child.material?.dispose();
-          });
-          state.scene?.remove(bin);
-        });
-        if (state.player) {
-          state.player.geometry?.dispose();
-          state.player.material?.dispose();
-          state.player.children.forEach(child => {
-            child.geometry?.dispose();
-            child.material?.dispose();
-          });
-        }
-        
-        if (state.renderer) {
-          state.renderer.dispose();
-          if (containerRef.current && state.renderer.domElement && containerRef.current.contains(state.renderer.domElement)) {
-            containerRef.current.removeChild(state.renderer.domElement);
-          }
-        }
-      };
-    } catch (err) {
-      setError('Lỗi khởi tạo game: ' + err.message);
-      setIsLoading(false);
+    /* ===== TRASH ===== */
+    const trash = [];
+    for (let i = 0; i < TOTAL_TRASH; i++) {
+      const t = makeMesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), 0xfacc15);
+      t.position.set(
+        (Math.random() - 0.5) * 30,
+        0.3,
+        (Math.random() - 0.5) * 30
+      );
+      trash.push(t);
+      scene.add(t);
     }
-  }, [gameOver]);
 
-  const movePlayer = (dx, dz) => {
-    const state = gameStateRef.current;
-    if (state.player) {
-      state.player.position.x += dx;
-      state.player.position.z += dz;
-      state.player.position.x = Math.max(-14, Math.min(14, state.player.position.x));
-      state.player.position.z = Math.max(-14, Math.min(14, state.player.position.z));
+    /* ===== OBSTACLES ===== */
+    const obstacles = [];
+    for (let i = 0; i < OBSTACLE_COUNT; i++) {
+      const o = makeMesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), 0x991b1b);
+      o.position.set(
+        (Math.random() - 0.5) * 25,
+        0.75,
+        (Math.random() - 0.5) * 25
+      );
+      obstacles.push(o);
+      scene.add(o);
     }
-  };
 
-  const pickupOrDrop = () => {
-    const state = gameStateRef.current;
-    
-    if (!state.holding) {
-      let nearest = null;
-      let minDist = 2;
-      
-      state.trash.forEach(trash => {
-        const dist = state.player.position.distanceTo(trash.position);
-        if (dist < minDist) {
-          minDist = dist;
-          nearest = trash;
+    const state = {
+      scene,
+      camera,
+      renderer,
+      player,
+      storage,
+      trash,
+      obstacles,
+      inventory: [],
+      velocity: new THREE.Vector3(),
+      keys: {},
+      joystick: { x: 0, y: 0 },
+      lastDamageTime: 0,
+      hitTime: 0,
+      animationId: null,
+      timerId: null,
+      stopped: false,
+      fallingItems: [],
+      recycledInStorage: 0,
+    };
+    gameRef.current = state;
+
+    const down = (e) => (state.keys[e.key.toLowerCase()] = true);
+    const up = (e) => (state.keys[e.key.toLowerCase()] = false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+
+    state.timerId = setInterval(() => {
+      setTimeLeft((t) => {
+        if (t <= 1) {
+          endGame("timeout");
+          return 0;
         }
+        return t - 1;
       });
-      
-      if (nearest) {
-        state.holding = nearest;
-        state.trash = state.trash.filter(t => t !== nearest);
-        setMessage('Đã nhặt rác!');
-      } else {
-        setMessage('Không có rác gần!');
-      }
-    } else {
-      let dropped = false;
-      state.bins.forEach(bin => {
-        const dist = state.player.position.distanceTo(bin.position);
-        if (dist < 2.5) {
-          dropped = true;
-          const correct = state.holding.userData.correct === bin.userData.type;
-          
-          if (correct) {
-            setScore(s => s + 10);
-            setMessage(`✓ Đúng! +10`);
-          } else {
-            setScore(s => Math.max(0, s - 5));
-            setLives(l => {
-              const newLives = l - 1;
-              if (newLives <= 0) setGameOver(true);
-              return newLives;
-            });
-            setMessage(`✗ Sai! -5`);
-          }
-          
-          state.scene.remove(state.holding);
-          state.holding = null;
-        }
-      });
-      
-      if (!dropped) {
-        setMessage('Gần thùng để thả!');
-      }
-    }
-  };
+    }, 1000);
 
-  const resetGame = () => {
-    const state = gameStateRef.current;
-
-    // stop animation if still running
-    if (state.animationId) {
+    const endGame = (reason) => {
+      state.stopped = true;
       cancelAnimationFrame(state.animationId);
-      state.animationId = null;
-    }
+      clearInterval(state.timerId);
 
-    // dispose renderer and remove canvas if still present
-    try {
-      if (state.renderer) {
-        state.renderer.dispose();
-        if (containerRef.current && state.renderer.domElement && containerRef.current.contains(state.renderer.domElement)) {
-          containerRef.current.removeChild(state.renderer.domElement);
+      setGameOver(true);
+
+      if (reason === "win") {
+        setMessage("🎉 Hoàn thành! Đã thu gom hết rác!");
+      } else if (reason === "timeout") {
+        setMessage(
+          `⏰ Hết giờ! Đã gom được ${state.recycledInStorage}/${TOTAL_TRASH} rác vào kho`
+        );
+      } else {
+        setMessage("💀 Va chạm vật cản – Hết mạng!");
+      }
+    };
+
+    const animate = () => {
+      if (state.stopped) return;
+
+      const isMobileMode = isMobileDevice();
+
+      let turn = 0;
+      let move = 0;
+
+      if (isMobileMode) {
+        const joyX = state.joystick.x;
+        const joyY = state.joystick.y;
+
+        if (Math.abs(joyX) > 0.1) {
+          player.rotation.y -= joyX * PLAYER_TURN_SPEED * 2;
+        }
+
+        if (Math.abs(joyY) > 0.1) {
+          move = joyY;
+        }
+      } else {
+        turn = (state.keys["a"] ? 1 : 0) - (state.keys["d"] ? 1 : 0);
+        move = (state.keys["s"] ? 1 : 0) - (state.keys["w"] ? 1 : 0);
+        player.rotation.y += turn * PLAYER_TURN_SPEED;
+      }
+
+      const forward = new THREE.Vector3(
+        Math.sin(player.rotation.y),
+        0,
+        Math.cos(player.rotation.y)
+      );
+
+      state.velocity.add(forward.multiplyScalar(move * PLAYER_ACCELERATION));
+
+      if (state.velocity.length() > PLAYER_MAX_SPEED)
+        state.velocity.setLength(PLAYER_MAX_SPEED);
+
+      state.velocity.multiplyScalar(PLAYER_FRICTION);
+
+      player.position.add(state.velocity);
+
+      /* ===== COLLISION ===== */
+      const COLLISION_RADIUS = 1.4;
+
+      for (const o of obstacles) {
+        const diff = player.position.clone().sub(o.position);
+        const distance = diff.length();
+
+        if (distance < COLLISION_RADIUS) {
+          const normal = diff.normalize();
+          const penetration = COLLISION_RADIUS - distance;
+
+          player.position.add(normal.multiplyScalar(penetration + 0.01));
+
+          const vDot = state.velocity.dot(normal);
+          if (vDot < 0) {
+            state.velocity.sub(normal.multiplyScalar(vDot));
+          }
+
+          state.velocity.add(normal.multiplyScalar(0.08));
+
+          const now = Date.now();
+          if (now - state.lastDamageTime > OBSTACLE_DAMAGE_COOLDOWN) {
+            state.lastDamageTime = now;
+            state.hitTime = now;
+
+            setHudPulse(true);
+            setTimeout(() => setHudPulse(false), 150);
+
+            setHp((hp) => {
+              if (hp <= 1) {
+                endGame("death");
+                return 0;
+              }
+              return hp - 1;
+            });
+          }
         }
       }
-    } catch (e) {
-      console.error('Error disposing renderer:', e);}
 
-    // reset in-memory game state
-    state.scene = null;
-    state.camera = null;
-    state.renderer = null;
-    state.trash = [];
-    state.bins = [];
-    state.holding = null;
-    state.keys = {};
+      /* ===== HIT FLASH ===== */
+      player.traverse((o) => {
+        if (o.isMesh) {
+          o.material.transparent = Date.now() - state.hitTime < 200;
+          o.material.opacity = o.material.transparent ? 0.5 : 1;
+        }
+      });
 
-    // reset React state
-    setScore(0);
-    setLives(3);
-    setMessage('');
-    setError('');
-    setGameOver(false);
-    setIsLoading(true);
+      /* ===== AUTO PICKUP ===== */
+      state.trash = state.trash.filter((t) => {
+        const wp = new THREE.Vector3();
+        t.getWorldPosition(wp);
+        if (wp.distanceTo(player.position) < AUTO_PICKUP_DISTANCE) {
+          if (state.inventory.length >= PLAYER_CAPACITY) return true;
+          state.inventory.push(t);
+          scene.remove(t);
+          player.add(t);
+          t.position.set(0, 0.8 + state.inventory.length * 0.25, -0.4);
+          setInventoryCount(state.inventory.length);
+          setHudPulse(true);
+          setTimeout(() => setHudPulse(false), 150);
+          return false;
+        }
+        return true;
+      });
+
+      /* ===== STORAGE ===== */
+      if (
+        player.position.distanceTo(storage.position) < STORAGE_ZONE_RADIUS &&
+        state.inventory.length
+      ) {
+        const count = state.inventory.length;
+
+        state.inventory.forEach((t, idx) => {
+          player.remove(t);
+          scene.add(t);
+
+          const worldPos = new THREE.Vector3();
+          player.getWorldPosition(worldPos);
+          t.position.copy(worldPos);
+          t.position.y = 2 + idx * 0.3;
+
+          state.fallingItems.push({
+            mesh: t,
+            startY: t.position.y,
+            targetY: storage.position.y + 0.5,
+            startTime: Date.now(),
+            duration: 500 + idx * 100,
+          });
+        });
+
+        state.inventory = [];
+        setInventoryCount(0);
+
+        state.recycledInStorage += count;
+        setRecycledCount(state.recycledInStorage);
+
+        if (state.recycledInStorage >= TOTAL_TRASH) {
+          setTimeout(() => {
+            endGame("win");
+          }, 800);
+        }
+
+        setHudPulse(true);
+        setTimeout(() => setHudPulse(false), 200);
+      }
+
+      /* ===== Animate falling items ===== */
+      const now = Date.now();
+      state.fallingItems = state.fallingItems.filter((item) => {
+        const elapsed = now - item.startTime;
+        const progress = Math.min(elapsed / item.duration, 1);
+        const easeProgress = 1 - Math.pow(1 - progress, 3);
+
+        item.mesh.position.y = THREE.MathUtils.lerp(
+          item.startY,
+          item.targetY,
+          easeProgress
+        );
+
+        item.mesh.rotation.y += 0.1;
+
+        if (progress >= 1) {
+          scene.remove(item.mesh);
+          return false;
+        }
+        return true;
+      });
+
+      const camOffset = new THREE.Vector3(0, 4, 8).applyAxisAngle(
+        new THREE.Vector3(0, 1, 0),
+        player.rotation.y
+      );
+      camera.position.copy(player.position.clone().add(camOffset));
+      camera.lookAt(player.position.x, 1.5, player.position.z);
+
+      renderer.render(scene, camera);
+      state.animationId = requestAnimationFrame(animate);
+    };
+
+    animate();
+
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      clearInterval(state.timerId);
+      cancelAnimationFrame(state.animationId);
+    };
+  }, []);
+
+  /* ===================== MOBILE JOYSTICK ===================== */
+  const handleJoystick = (e, start) => {
+    const joy = gameRef.current.joystick;
+    if (!e.touches) return;
+    const t = e.touches[0];
+    if (start) {
+      joy.startX = t.clientX;
+      joy.startY = t.clientY;
+    } else {
+      joy.x = THREE.MathUtils.clamp((t.clientX - joy.startX) / 50, -1, 1);
+      joy.y = THREE.MathUtils.clamp((t.clientY - joy.startY) / 50, -1, 1);
+    }
+  };
+
+  const resetJoystick = () => {
+    gameRef.current.joystick.x = 0;
+    gameRef.current.joystick.y = 0;
+  };
+
+  const progressPercent = (recycledCount / TOTAL_TRASH) * 100;
+  const requiredTrash = Math.ceil((REQUIRED_PERCENTAGE / 100) * TOTAL_TRASH); // 10 rác
+  const canProceed = recycledCount >= requiredTrash;
+
+  const handleGameOverAction = () => {
+    if (message.includes("Hoàn thành") || canProceed) {
+      navigate("/sorting");
+      window.location.reload();
+    } else {
+      window.location.reload();
+    }
   };
 
   return (
-    <div style={{ 
-      display: 'flex', 
-      flexDirection: 'column', 
-      alignItems: 'center', 
-      minHeight: '100vh', 
-      backgroundColor: '#111827',
-      padding: '20px'
-    }}>
-      <h1 style={{ 
-        fontSize: '36px', 
-        fontWeight: 'bold', 
-        textAlign: 'center', 
-        marginBottom: '20px',
-        color: 'white'
-      }}>
-         Game Nhặt Rác 3D
-      </h1>
-      
-      <div style={{ 
-        display: 'flex', 
-        gap: '20px',
-        marginBottom: '20px' 
-      }}>
-        <div style={{ 
-          backgroundColor: '#2563eb', 
-          color: 'white', 
-          padding: '15px 25px', 
-          borderRadius: '10px',
-          fontWeight: 'bold',
-          fontSize: '20px'
-        }}>
-           {score}
-        </div>
-        <div style={{ 
-          backgroundColor: '#dc2626', 
-          color: 'white', 
-          padding: '15px 25px', 
-          borderRadius: '10px',
-          fontWeight: 'bold',
-          fontSize: '20px'
-        }}>
-           {lives}
-        </div>
-      </div>
+    <div
+      style={{
+        width: "100%",
+        height: "100vh",
+        position: "relative",
+        overflow: "hidden",
+      }}
+    >
+      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
 
-      {error && (
-        <div style={{
-          backgroundColor: '#dc2626',
-          color: 'white',
-          padding: '15px',
-          borderRadius: '10px',
-          marginBottom: '20px',
-          maxWidth: '800px'
-        }}>
-           {error}
-        </div>
-      )}
-
-      {message && (
-        <div style={{ 
-          backgroundColor: '#fbbf24', 
-          color: 'black', 
-          padding: '10px 20px', 
-          borderRadius: '10px',
-          marginBottom: '20px',
-          fontWeight: '600'
-        }}>
-          {message}
-        </div>
-      )}
-
-      {isLoading && (
-        <div style={{
-          color: 'white',
-          fontSize: '20px',
-          padding: '20px'
-        }}>
-           Đang tải game...
-        </div>
-      )}
-
-      <div 
-        ref={containerRef} 
-        style={{ 
-          width: '100%',
-          maxWidth: '1200px',
-          height: '600px',
-          borderRadius: '10px',
-          border: '4px solid #374151',
-          backgroundColor: '#000'
+      {/* HUD */}
+      <div
+        style={{
+          position: "absolute",
+          top: 20,
+          left: "50%",
+          transform: `translateX(-50%) ${
+            hudPulse ? "scale(1.08)" : "scale(1)"
+          }`,
+          transition: "transform 0.15s ease",
+          background:
+            "linear-gradient(135deg, rgba(20, 83, 45, 0.95), rgba(34, 197, 94, 0.95))",
+          color: "white",
+          padding: "16px 32px",
+          borderRadius: 20,
+          boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
+          border: "3px solid rgba(255,255,255,0.3)",
+          minWidth: 320,
+          textAlign: "center",
         }}
-      />
-
-      <div style={{
-        display: 'flex',
-        justifyContent: 'center',
-        gap: '20px',
-        marginTop: '20px',
-        flexWrap: 'wrap'
-      }}>
-        <div style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(3, 70px)',
-          gap: '5px',
-          padding: '15px',
-          backgroundColor: '#1f2937',
-          borderRadius: '10px'
-        }}>
-          <div></div>
-          <button onClick={() => movePlayer(0, -0.5)} style={btnStyle}>⬆️</button>
-          <div></div>
-          <button onClick={() => movePlayer(-0.5, 0)} style={btnStyle}>⬅️</button>
-          <div></div>
-          <button onClick={() => movePlayer(0.5, 0)} style={btnStyle}>➡️</button>
-          <div></div>
-          <button onClick={() => movePlayer(0, 0.5)} style={btnStyle}>⬇️</button>
-          <div></div>
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-around",
+            marginBottom: 12,
+            fontSize: 18,
+            fontWeight: "bold",
+          }}
+        >
+          <div>
+            ❤️ {hp}/{PLAYER_MAX_HP}
+          </div>
+          <div>
+            🎒 {inventoryCount}/{PLAYER_CAPACITY}
+          </div>
+          <div>⏱️ {timeLeft}s</div>
         </div>
 
-        <button onClick={pickupOrDrop} style={{
-          ...btnStyle,
-          padding: '20px 40px',
-          fontSize: '24px',
-          backgroundColor: '#22c55e',
-          alignSelf: 'center'
-        }}>
-           Nhặt
-        </button>
-      </div>
-
-      <div style={{ 
-        marginTop: '20px', 
-        backgroundColor: '#1f2937', 
-        color: 'white', 
-        padding: '20px',
-        borderRadius: '10px',
-        maxWidth: '1200px',
-        width: '100%'
-      }}>
-        <p style={{ marginBottom: '10px' }}>
-           <strong>Điều khiển:</strong> Click vào màn hình game rồi dùng W/A/S/D hoặc phím mũi tên
-        </p>
-        <p style={{ marginBottom: '10px' }}>
-          <strong>Hoặc:</strong> Dùng nút bấm bên dưới màn hình
-        </p>
-        <p>
-           <strong>Mục tiêu:</strong> Nhặt rác và thả vào đúng thùng - Xanh dương (Tái chế), Xanh lá (Hữu cơ), Đỏ (Rác thải), Cam (Nguy hại)
-        </p>
-      </div>
-
-      {gameOver && (
-        <div style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          right: 0,
-          bottom: 0,
-          backgroundColor: 'rgba(0,0,0,0.9)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          zIndex: 50
-        }}>
-          <div style={{
-            backgroundColor: '#0b1220',
-            color: 'white',
-            borderRadius: '15px',
-            padding: '40px',
-            textAlign: 'center'
-          }}>
-            <h2 style={{ fontSize: '40px', marginBottom: '20px', color: '#dc2626' }}>
-              Game Over!
-            </h2>
-            <p style={{ fontSize: '28px', marginBottom: '20px' }}>
-              Điểm: <strong style={{ color: '#2563eb' }}>{score}</strong>
-            </p>
-            <button
-              onClick={resetGame}
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 14, marginBottom: 6, opacity: 0.9 }}>
+            🗑️ Đã gom vào kho: {recycledCount}/{TOTAL_TRASH}
+          </div>
+          <div
+            style={{
+              width: "100%",
+              height: 24,
+              background: "rgba(0,0,0,0.3)",
+              borderRadius: 12,
+              overflow: "hidden",
+              border: "2px solid rgba(255,255,255,0.4)",
+            }}
+          >
+            <div
               style={{
-                backgroundColor: '#22c55e',
-                color: 'white',
-                fontWeight: 'bold',
-                padding: '15px 40px',
-                borderRadius: '10px',
-                fontSize: '24px',
-                border: 'none',
-                cursor: 'pointer'
+                width: `${progressPercent}%`,
+                height: "100%",
+                background: "linear-gradient(90deg, #fbbf24, #facc15, #fde047)",
+                transition: "width 0.3s ease",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 12,
+                fontWeight: "bold",
+                color: "#000",
               }}
             >
-               Chơi lại
-            </button>
+              {progressPercent > 15 && `${Math.round(progressPercent)}%`}
+            </div>
           </div>
+        </div>
+      </div>
+
+      {/* Mobile Joystick */}
+      {isMobile && (
+        <div
+          onTouchStart={(e) => handleJoystick(e, true)}
+          onTouchMove={(e) => handleJoystick(e)}
+          onTouchEnd={resetJoystick}
+          style={{
+            position: "absolute",
+            bottom: 30,
+            left: 30,
+            width: 120,
+            height: 120,
+            borderRadius: "50%",
+            background: "rgba(255,255,255,0.15)",
+            border: "3px solid rgba(255,255,255,0.5)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: "50%",
+              left: "50%",
+              width: 40,
+              height: 40,
+              borderRadius: "50%",
+              background: "rgba(255,255,255,0.6)",
+              transform: "translate(-50%, -50%)",
+            }}
+          />
+        </div>
+      )}
+
+      {/* Game Over Screen */}
+      {gameOver && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(0,0,0,0.9)",
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            flexDirection: "column",
+            color: "white",
+            padding: 20,
+          }}
+        >
+          <h1
+            style={{
+              fontSize: 48,
+              marginBottom: 20,
+              textShadow: "0 4px 16px rgba(0,0,0,0.5)",
+              textAlign: "center",
+            }}
+          >
+            {message}
+          </h1>
+
+          {/* Thông báo điều kiện */}
+          {!message.includes("Hoàn thành") && (
+            <div
+              style={{
+                background: canProceed
+                  ? "rgba(34, 197, 94, 0.2)"
+                  : "rgba(239, 68, 68, 0.2)",
+                border: canProceed ? "2px solid #22c55e" : "2px solid #ef4444",
+                borderRadius: 16,
+                padding: 24,
+                marginBottom: 24,
+                maxWidth: 500,
+              }}
+            >
+              <div
+                style={{ fontSize: 20, marginBottom: 12, fontWeight: "bold" }}
+              >
+                {canProceed
+                  ? "✅ Đủ điều kiện qua màn!"
+                  : "❌ Chưa đủ điều kiện"}
+              </div>
+              <div style={{ fontSize: 16, opacity: 0.9 }}>
+                Cần thu gom ít nhất{" "}
+                <span style={{ fontWeight: "bold", color: "#fbbf24" }}>
+                  {requiredTrash}/{TOTAL_TRASH}
+                </span>{" "}
+                rác vào kho (≥{REQUIRED_PERCENTAGE}%)
+              </div>
+              <div style={{ fontSize: 16, marginTop: 8 }}>
+                Bạn đã gom vào kho:{" "}
+                <span
+                  style={{
+                    fontWeight: "bold",
+                    color: canProceed ? "#22c55e" : "#ef4444",
+                  }}
+                >
+                  {recycledCount}/{TOTAL_TRASH}
+                </span>{" "}
+                rác
+              </div>
+            </div>
+          )}
+
+          <button
+            onClick={handleGameOverAction}
+            style={{
+              padding: "16px 48px",
+              fontSize: 24,
+              background:
+                message.includes("Hoàn thành") || canProceed
+                  ? "linear-gradient(135deg, #22c55e, #16a34a)"
+                  : "linear-gradient(135deg, #ef4444, #dc2626)",
+              color: "white",
+              border: "none",
+              borderRadius: 12,
+              cursor: "pointer",
+              boxShadow: "0 8px 24px rgba(0,0,0,0.3)",
+              fontWeight: "bold",
+            }}
+          >
+            {message.includes("Hoàn thành") || canProceed
+              ? "➡️ Sang màn phân loại"
+              : "🔁 Chơi lại"}
+          </button>
         </div>
       )}
     </div>
   );
-};
-
-const btnStyle = {
-  width: '70px',
-  height: '70px',
-  fontSize: '28px',
-  backgroundColor: '#8B5CF6',
-  color: 'white',
-  border: 'none',
-  borderRadius: '10px',
-  cursor: 'pointer',
-  fontWeight: 'bold'
-};
-
-export default TrashSortingGame3D;
+}
