@@ -6,10 +6,18 @@ import * as THREE from "three";
 const PLAYER_CAPACITY = 5;
 const PLAYER_MAX_HP = 3;
 
-const PLAYER_MAX_SPEED = 0.25;
-const PLAYER_ACCELERATION = 0.012;
-const PLAYER_FRICTION = 0.9;
+const PLAYER_MAX_SPEED = 0.2;
+const PLAYER_ACCELERATION = 0.008;
+const PLAYER_FRICTION = 0.92;
 const PLAYER_TURN_SPEED = 0.045;
+const PLAYER_TURN_FRICTION = 0.77; // Turn inertia friction
+const PLAYER_COLLISION_RADIUS = 0.8;
+const OBSTACLE_COLLISION_RADIUS = 1.0;
+
+// Special zones
+const SPEED_ZONE_COUNT = 3;
+const SLOW_ZONE_COUNT = 3;
+const ZONE_RADIUS = 3;
 
 const TOTAL_TRASH = 12;
 const OBSTACLE_COUNT = 6;
@@ -39,6 +47,10 @@ export default function RecycleGame() {
   const [message, setMessage] = useState("");
   const [isMobile, setIsMobile] = useState(false);
   const [hudPulse, setHudPulse] = useState(false);
+  const [damageFlash, setDamageFlash] = useState(false);
+  const [screenShake, setScreenShake] = useState({ x: 0, y: 0 });
+  const [inventoryFull, setInventoryFull] = useState(false);
+  const [currentZone, setCurrentZone] = useState(null); // 'speed' | 'slow' | null
 
   /* ===================== INIT ===================== */
   useEffect(() => {
@@ -115,16 +127,211 @@ export default function RecycleGame() {
 
     /* ===== OBSTACLES ===== */
     const obstacles = [];
+    const minDistFromPlayer = 5; // Minimum distance from player start
+    const minDistBetweenObstacles = 4; // Minimum distance between obstacles
+    
     for (let i = 0; i < OBSTACLE_COUNT; i++) {
       const o = makeMesh(new THREE.BoxGeometry(1.5, 1.5, 1.5), 0x991b1b);
-      o.position.set(
-        (Math.random() - 0.5) * 25,
-        0.75,
-        (Math.random() - 0.5) * 25
-      );
+      
+      let validPosition = false;
+      let attempts = 0;
+      
+      while (!validPosition && attempts < 50) {
+        const x = (Math.random() - 0.5) * 25;
+        const z = (Math.random() - 0.5) * 25;
+        
+        // Check distance from player start (0, 0)
+        const distFromPlayer = Math.sqrt(x * x + z * z);
+        
+        // Check distance from storage zone
+        const distFromStorage = Math.sqrt(x * x + (z - (-15)) * (z - (-15)));
+        
+        if (distFromPlayer > minDistFromPlayer && distFromStorage > 6) {
+          // Check distance from other obstacles
+          let tooClose = false;
+          for (const existingObs of obstacles) {
+            const dx = x - existingObs.position.x;
+            const dz = z - existingObs.position.z;
+            if (Math.sqrt(dx * dx + dz * dz) < minDistBetweenObstacles) {
+              tooClose = true;
+              break;
+            }
+          }
+          
+          if (!tooClose) {
+            o.position.set(x, 0.75, z);
+            validPosition = true;
+          }
+        }
+        attempts++;
+      }
+      
+      // Fallback if no valid position found
+      if (!validPosition) {
+        o.position.set(
+          (Math.random() - 0.5) * 25,
+          0.75,
+          (Math.random() - 0.5) * 25
+        );
+      }
+      
       obstacles.push(o);
       scene.add(o);
     }
+
+    /* ===== SPECIAL ZONES ===== */
+    const speedZones = [];
+    const slowZones = [];
+    const allZonePositions = []; // Track all zone positions to prevent overlap
+    const MIN_ZONE_DISTANCE = ZONE_RADIUS * 2.5; // Minimum distance between zones
+
+    // Helper function to find valid zone position
+    const findValidZonePosition = () => {
+      let attempts = 0;
+      while (attempts < 100) {
+        const x = (Math.random() - 0.5) * 35;
+        const z = (Math.random() - 0.5) * 35;
+        
+        // Check distance from player start
+        const distFromPlayer = Math.sqrt(x * x + z * z);
+        if (distFromPlayer < 8) {
+          attempts++;
+          continue;
+        }
+        
+        // Check distance from storage
+        const distFromStorage = Math.sqrt(x * x + (z + 15) * (z + 15));
+        if (distFromStorage < 8) {
+          attempts++;
+          continue;
+        }
+        
+        // Check distance from obstacles
+        let tooCloseToObstacle = false;
+        for (const obs of obstacles) {
+          const dx = x - obs.position.x;
+          const dz = z - obs.position.z;
+          if (Math.sqrt(dx * dx + dz * dz) < ZONE_RADIUS + 2) {
+            tooCloseToObstacle = true;
+            break;
+          }
+        }
+        if (tooCloseToObstacle) {
+          attempts++;
+          continue;
+        }
+        
+        // Check distance from other zones
+        let tooCloseToZone = false;
+        for (const pos of allZonePositions) {
+          const dx = x - pos.x;
+          const dz = z - pos.z;
+          if (Math.sqrt(dx * dx + dz * dz) < MIN_ZONE_DISTANCE) {
+            tooCloseToZone = true;
+            break;
+          }
+        }
+        if (tooCloseToZone) {
+          attempts++;
+          continue;
+        }
+        
+        return { x, z };
+      }
+      return null; // Could not find valid position
+    };
+
+    // Create speed boost zones (blue/cyan)
+    for (let i = 0; i < SPEED_ZONE_COUNT; i++) {
+      const position = findValidZonePosition();
+      if (!position) continue; // Skip if no valid position found
+      
+      const { x, z } = position;
+      allZonePositions.push({ x, z });
+      
+      const zoneGeo = new THREE.CylinderGeometry(ZONE_RADIUS, ZONE_RADIUS, 0.1, 32);
+      const zoneMat = new THREE.MeshStandardMaterial({
+        color: 0x06b6d4, // Cyan
+        transparent: true,
+        opacity: 0.4,
+      });
+      const zone = new THREE.Mesh(zoneGeo, zoneMat);
+      
+      zone.position.set(x, 0.05, z);
+      zone.userData.type = 'speed';
+      zone.userData.multiplier = 1.8; // 80% faster
+      speedZones.push(zone);
+      scene.add(zone);
+
+      // Add glow ring effect
+      const ringGeo = new THREE.RingGeometry(ZONE_RADIUS - 0.1, ZONE_RADIUS, 32);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: 0x22d3ee,
+        transparent: true,
+        opacity: 0.6,
+        side: THREE.DoubleSide,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(x, 0.06, z);
+      scene.add(ring);
+
+      // Add arrow indicator
+      const arrowGeo = new THREE.ConeGeometry(0.3, 0.6, 4);
+      const arrowMat = new THREE.MeshStandardMaterial({ color: 0x06b6d4 });
+      const arrow = new THREE.Mesh(arrowGeo, arrowMat);
+      arrow.position.set(x, 0.5, z);
+      arrow.rotation.z = Math.PI; // Point up
+      zone.userData.arrow = arrow;
+      scene.add(arrow);
+    }
+
+    // Create slow zones (orange/mud)
+    for (let i = 0; i < SLOW_ZONE_COUNT; i++) {
+      const position = findValidZonePosition();
+      if (!position) continue; // Skip if no valid position found
+      
+      const { x, z } = position;
+      allZonePositions.push({ x, z });
+      
+      const zoneGeo = new THREE.CylinderGeometry(ZONE_RADIUS, ZONE_RADIUS, 0.15, 32);
+      const zoneMat = new THREE.MeshStandardMaterial({
+        color: 0x92400e, // Brown/mud
+        transparent: true,
+        opacity: 0.5,
+      });
+      const zone = new THREE.Mesh(zoneGeo, zoneMat);
+      
+      zone.position.set(x, 0.08, z);
+      zone.userData.type = 'slow';
+      zone.userData.multiplier = 0.4; // 60% slower
+      slowZones.push(zone);
+      scene.add(zone);
+
+      // Add warning ring
+      const ringGeo = new THREE.RingGeometry(ZONE_RADIUS - 0.1, ZONE_RADIUS, 32);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: 0xfbbf24,
+        transparent: true,
+        opacity: 0.7,
+        side: THREE.DoubleSide,
+      });
+      const ring = new THREE.Mesh(ringGeo, ringMat);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.set(x, 0.09, z);
+      scene.add(ring);
+
+      // Add slow icon (waves)
+      const iconGeo = new THREE.TorusGeometry(0.4, 0.08, 8, 16);
+      const iconMat = new THREE.MeshStandardMaterial({ color: 0xfbbf24 });
+      const icon = new THREE.Mesh(iconGeo, iconMat);
+      icon.position.set(x, 0.4, z);
+      icon.rotation.x = Math.PI / 2;
+      zone.userData.icon = icon;
+      scene.add(icon);
+    }
+
+    const allZones = [...speedZones, ...slowZones];
 
     const state = {
       scene,
@@ -134,8 +341,12 @@ export default function RecycleGame() {
       storage,
       trash,
       obstacles,
+      allZones,
+      speedZones,
+      slowZones,
       inventory: [],
       velocity: new THREE.Vector3(),
+      angularVelocity: 0, // For turn inertia
       keys: {},
       joystick: { x: 0, y: 0 },
       lastDamageTime: 0,
@@ -144,7 +355,10 @@ export default function RecycleGame() {
       timerId: null,
       stopped: false,
       fallingItems: [],
+      scatteredItems: [], // Items scattered when hit
       recycledInStorage: 0,
+      speedMultiplier: 1,
+      lastInventoryFullWarning: 0,
     };
     gameRef.current = state;
 
@@ -186,25 +400,76 @@ export default function RecycleGame() {
 
       const isMobileMode = isMobileDevice();
 
-      let turn = 0;
+      let turnInput = 0;
       let move = 0;
+
+      /* ===== CHECK SPECIAL ZONES ===== */
+      let inZone = null;
+      state.speedMultiplier = 1;
+
+      for (const zone of state.allZones) {
+        const dx = player.position.x - zone.position.x;
+        const dz = player.position.z - zone.position.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < ZONE_RADIUS) {
+          inZone = zone.userData.type;
+          state.speedMultiplier = zone.userData.multiplier;
+
+          // Animate zone indicators
+          if (zone.userData.arrow) {
+            zone.userData.arrow.position.y = 0.5 + Math.sin(Date.now() * 0.005) * 0.2;
+            zone.userData.arrow.rotation.y += 0.05;
+          }
+          if (zone.userData.icon) {
+            zone.userData.icon.rotation.z += 0.03;
+          }
+          break;
+        }
+      }
+
+      setCurrentZone(inZone);
+
+      // Animate all zone indicators
+      for (const zone of state.allZones) {
+        if (zone.userData.arrow) {
+          zone.userData.arrow.rotation.y += 0.02;
+        }
+        if (zone.userData.icon) {
+          zone.userData.icon.rotation.z += 0.01;
+        }
+      }
 
       if (isMobileMode) {
         const joyX = state.joystick.x;
         const joyY = state.joystick.y;
 
         if (Math.abs(joyX) > 0.1) {
-          player.rotation.y -= joyX * PLAYER_TURN_SPEED * 2;
+          turnInput = -joyX;
         }
 
         if (Math.abs(joyY) > 0.1) {
           move = joyY;
         }
       } else {
-        turn = (state.keys["a"] ? 1 : 0) - (state.keys["d"] ? 1 : 0);
+        turnInput = (state.keys["a"] ? 1 : 0) - (state.keys["d"] ? 1 : 0);
         move = (state.keys["s"] ? 1 : 0) - (state.keys["w"] ? 1 : 0);
-        player.rotation.y += turn * PLAYER_TURN_SPEED;
       }
+
+      /* ===== TURN WITH INERTIA ===== */
+      // Apply turn input to angular velocity
+      state.angularVelocity += turnInput * PLAYER_TURN_SPEED * 0.3;
+
+      // Apply friction to angular velocity (creates turn inertia)
+      state.angularVelocity *= PLAYER_TURN_FRICTION;
+
+      // Stop completely if very slow
+      if (Math.abs(state.angularVelocity) < 0.001) {
+        state.angularVelocity = 0;
+      }
+
+      // Apply angular velocity to rotation
+      player.rotation.y += state.angularVelocity;
 
       const forward = new THREE.Vector3(
         Math.sin(player.rotation.y),
@@ -212,42 +477,122 @@ export default function RecycleGame() {
         Math.cos(player.rotation.y)
       );
 
-      state.velocity.add(forward.multiplyScalar(move * PLAYER_ACCELERATION));
+      // Apply acceleration based on input (affected by zone)
+      const effectiveAccel = PLAYER_ACCELERATION * state.speedMultiplier;
+      if (Math.abs(move) > 0.01) {
+        state.velocity.add(forward.clone().multiplyScalar(move * effectiveAccel));
+      }
 
-      if (state.velocity.length() > PLAYER_MAX_SPEED)
-        state.velocity.setLength(PLAYER_MAX_SPEED);
+      // Apply friction (creates inertia effect - player slides when stopping)
+      // Slow zones have more friction
+      const effectiveFriction = inZone === 'slow' ? PLAYER_FRICTION * 0.95 : PLAYER_FRICTION;
+      state.velocity.multiplyScalar(effectiveFriction);
 
-      state.velocity.multiplyScalar(PLAYER_FRICTION);
+      // Clamp max speed (affected by zone)
+      const effectiveMaxSpeed = PLAYER_MAX_SPEED * state.speedMultiplier;
+      if (state.velocity.length() > effectiveMaxSpeed) {
+        state.velocity.setLength(effectiveMaxSpeed);
+      }
 
-      player.position.add(state.velocity);
+      // Stop completely if very slow
+      if (state.velocity.length() < 0.001) {
+        state.velocity.set(0, 0, 0);
+      }
+
+      // Calculate next position before applying
+      const nextPosition = player.position.clone().add(state.velocity);
 
       /* ===== COLLISION ===== */
-      const COLLISION_RADIUS = 1.4;
+      let collided = false;
+      const combinedRadius = PLAYER_COLLISION_RADIUS + OBSTACLE_COLLISION_RADIUS;
 
       for (const o of obstacles) {
-        const diff = player.position.clone().sub(o.position);
+        const diff = nextPosition.clone().sub(o.position);
+        diff.y = 0; // Only check horizontal distance
         const distance = diff.length();
 
-        if (distance < COLLISION_RADIUS) {
-          const normal = diff.normalize();
-          const penetration = COLLISION_RADIUS - distance;
+        if (distance < combinedRadius) {
+          collided = true;
+          
+          // Calculate push direction (away from obstacle)
+          const pushDir = diff.clone().normalize();
+          const penetration = combinedRadius - distance;
 
-          player.position.add(normal.multiplyScalar(penetration + 0.01));
+          // Push player out of obstacle
+          nextPosition.add(pushDir.clone().multiplyScalar(penetration + 0.05));
 
-          const vDot = state.velocity.dot(normal);
-          if (vDot < 0) {
-            state.velocity.sub(normal.multiplyScalar(vDot));
+          // Reflect velocity off the obstacle surface
+          const velocityDot = state.velocity.dot(pushDir);
+          if (velocityDot < 0) {
+            // Remove velocity component going into obstacle
+            state.velocity.sub(pushDir.clone().multiplyScalar(velocityDot * 1.5));
           }
+          
+          // Add bounce effect
+          state.velocity.add(pushDir.clone().multiplyScalar(0.05));
 
-          state.velocity.add(normal.multiplyScalar(0.08));
-
+          // Apply damage with cooldown
           const now = Date.now();
           if (now - state.lastDamageTime > OBSTACLE_DAMAGE_COOLDOWN) {
             state.lastDamageTime = now;
             state.hitTime = now;
 
+            // Damage flash effect
+            setDamageFlash(true);
+            setTimeout(() => setDamageFlash(false), 200);
+
+            // Screen shake effect
+            const shakeIntensity = 8;
+            const shakeInterval = setInterval(() => {
+              setScreenShake({
+                x: (Math.random() - 0.5) * shakeIntensity,
+                y: (Math.random() - 0.5) * shakeIntensity,
+              });
+            }, 30);
+            setTimeout(() => {
+              clearInterval(shakeInterval);
+              setScreenShake({ x: 0, y: 0 });
+            }, 300);
+
             setHudPulse(true);
             setTimeout(() => setHudPulse(false), 150);
+
+            // Drop all items from inventory
+            if (state.inventory.length > 0) {
+              const playerWorldPos = new THREE.Vector3();
+              player.getWorldPosition(playerWorldPos);
+
+              state.inventory.forEach((item, idx) => {
+                player.remove(item);
+                scene.add(item);
+
+                // Set initial position at player
+                item.position.copy(playerWorldPos);
+                item.position.y = 1.5 + idx * 0.2;
+
+                // Calculate scatter direction (away from obstacle)
+                const scatterAngle = Math.random() * Math.PI * 2;
+                const scatterSpeed = 0.15 + Math.random() * 0.1;
+                const scatterDir = new THREE.Vector3(
+                  Math.cos(scatterAngle) * scatterSpeed,
+                  0.08 + Math.random() * 0.05, // Upward velocity
+                  Math.sin(scatterAngle) * scatterSpeed
+                );
+
+                state.scatteredItems.push({
+                  mesh: item,
+                  velocity: scatterDir,
+                  startTime: Date.now(),
+                  bounces: 0,
+                });
+
+                // Add back to trash array so player can pick up again
+                state.trash.push(item);
+              });
+
+              state.inventory = [];
+              setInventoryCount(0);
+            }
 
             setHp((hp) => {
               if (hp <= 1) {
@@ -259,6 +604,9 @@ export default function RecycleGame() {
           }
         }
       }
+
+      // Apply final position after collision resolution
+      player.position.copy(nextPosition);
 
       /* ===== HIT FLASH ===== */
       player.traverse((o) => {
@@ -273,12 +621,22 @@ export default function RecycleGame() {
         const wp = new THREE.Vector3();
         t.getWorldPosition(wp);
         if (wp.distanceTo(player.position) < AUTO_PICKUP_DISTANCE) {
-          if (state.inventory.length >= PLAYER_CAPACITY) return true;
+          if (state.inventory.length >= PLAYER_CAPACITY) {
+            // Show inventory full warning (with cooldown)
+            const now = Date.now();
+            if (now - state.lastInventoryFullWarning > 500) {
+              state.lastInventoryFullWarning = now;
+              setInventoryFull(true);
+              setTimeout(() => setInventoryFull(false), 800);
+            }
+            return true;
+          }
           state.inventory.push(t);
           scene.remove(t);
           player.add(t);
           t.position.set(0, 0.8 + state.inventory.length * 0.25, -0.4);
           setInventoryCount(state.inventory.length);
+          setInventoryFull(false); // Clear warning if was showing
           setHudPulse(true);
           setTimeout(() => setHudPulse(false), 150);
           return false;
@@ -349,6 +707,45 @@ export default function RecycleGame() {
         return true;
       });
 
+      /* ===== Animate scattered items ===== */
+      const GRAVITY = 0.008;
+      const GROUND_Y = 0.3;
+      const SCATTER_DURATION = 2000; // 2 seconds max
+
+      state.scatteredItems = state.scatteredItems.filter((item) => {
+        const elapsed = now - item.startTime;
+
+        // Apply gravity
+        item.velocity.y -= GRAVITY;
+
+        // Update position
+        item.mesh.position.add(item.velocity);
+
+        // Rotate while flying
+        item.mesh.rotation.x += 0.15;
+        item.mesh.rotation.z += 0.1;
+
+        // Bounce off ground
+        if (item.mesh.position.y < GROUND_Y) {
+          item.mesh.position.y = GROUND_Y;
+          item.velocity.y *= -0.4; // Bounce with energy loss
+          item.velocity.x *= 0.7; // Friction
+          item.velocity.z *= 0.7;
+          item.bounces++;
+        }
+
+        // Stop animation after duration or multiple bounces
+        if (elapsed > SCATTER_DURATION || item.bounces > 3) {
+          // Settle on ground
+          item.mesh.position.y = GROUND_Y;
+          item.mesh.rotation.x = 0;
+          item.mesh.rotation.z = 0;
+          return false;
+        }
+
+        return true;
+      });
+
       const camOffset = new THREE.Vector3(0, 4, 8).applyAxisAngle(
         new THREE.Vector3(0, 1, 0),
         player.rotation.y
@@ -411,7 +808,69 @@ export default function RecycleGame() {
         overflow: "hidden",
       }}
     >
-      <div ref={containerRef} style={{ width: "100%", height: "100%" }} />
+      {/* Damage Flash Overlay */}
+      {damageFlash && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "radial-gradient(circle, transparent 30%, rgba(255, 0, 0, 0.6) 100%)",
+            pointerEvents: "none",
+            zIndex: 100,
+            animation: "pulse 0.2s ease-out",
+          }}
+        />
+      )}
+
+      {/* Zone Indicator */}
+      {currentZone && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 150,
+            left: "50%",
+            transform: "translateX(-50%)",
+            background: currentZone === 'speed' 
+              ? "linear-gradient(135deg, rgba(6, 182, 212, 0.9), rgba(34, 211, 238, 0.9))"
+              : "linear-gradient(135deg, rgba(146, 64, 14, 0.9), rgba(251, 191, 36, 0.9))",
+            color: "white",
+            padding: "12px 24px",
+            borderRadius: 12,
+            fontSize: 18,
+            fontWeight: "bold",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
+            border: "2px solid rgba(255,255,255,0.4)",
+            zIndex: 120,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+          }}
+        >
+          {currentZone === 'speed' ? (
+            <>
+              <span style={{ fontSize: 24 }}>⚡</span>
+              <span>Tăng tốc!</span>
+              <span style={{ fontSize: 14, opacity: 0.9 }}>+80%</span>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: 24 }}>🐌</span>
+              <span>Vùng lầy!</span>
+              <span style={{ fontSize: 14, opacity: 0.9 }}>-60%</span>
+            </>
+          )}
+        </div>
+      )}
+
+      <div
+        ref={containerRef}
+        style={{
+          width: "100%",
+          height: "100%",
+          transform: `translate(${screenShake.x}px, ${screenShake.y}px)`,
+          transition: screenShake.x === 0 ? "transform 0.1s ease-out" : "none",
+        }}
+      />
 
       {/* HUD */}
       <div
@@ -423,15 +882,21 @@ export default function RecycleGame() {
             hudPulse ? "scale(1.08)" : "scale(1)"
           }`,
           transition: "transform 0.15s ease",
-          background:
-            "linear-gradient(135deg, rgba(20, 83, 45, 0.95), rgba(34, 197, 94, 0.95))",
+          background: inventoryFull
+            ? "linear-gradient(135deg, rgba(185, 28, 28, 0.95), rgba(239, 68, 68, 0.95))"
+            : "linear-gradient(135deg, rgba(20, 83, 45, 0.95), rgba(34, 197, 94, 0.95))",
           color: "white",
           padding: "16px 32px",
           borderRadius: 20,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.3)",
-          border: "3px solid rgba(255,255,255,0.3)",
+          boxShadow: inventoryFull
+            ? "0 0 20px rgba(239, 68, 68, 0.8), 0 0 40px rgba(239, 68, 68, 0.4)"
+            : "0 8px 32px rgba(0,0,0,0.3)",
+          border: inventoryFull
+            ? "3px solid rgba(255, 100, 100, 0.9)"
+            : "3px solid rgba(255,255,255,0.3)",
           minWidth: 320,
           textAlign: "center",
+          animation: inventoryFull ? "inventoryFullPulse 0.3s ease-in-out infinite" : "none",
         }}
       >
         <div
@@ -446,8 +911,12 @@ export default function RecycleGame() {
           <div>
             ❤️ {hp}/{PLAYER_MAX_HP}
           </div>
-          <div>
-            🎒 {inventoryCount}/{PLAYER_CAPACITY}
+          <div style={{
+            color: inventoryFull ? "#fca5a5" : "white",
+            animation: inventoryFull ? "textBlink 0.4s ease-in-out infinite" : "none",
+          }}>
+            {inventoryFull ? "🎒❌" : "🎒"} {inventoryCount}/{PLAYER_CAPACITY}
+            {inventoryFull && <span style={{ fontSize: 12, marginLeft: 4 }}>ĐẦY!</span>}
           </div>
           <div>⏱️ {timeLeft}s</div>
         </div>
