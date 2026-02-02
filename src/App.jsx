@@ -1,17 +1,18 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 
 /* ===================== CONSTANTS ===================== */
 const PLAYER_CAPACITY = 5;
-const PLAYER_MAX_HP = 3;
+const PLAYER_MAX_HP = 10;
 
 const PLAYER_MAX_SPEED = 0.2;
 const PLAYER_ACCELERATION = 0.008;
 const PLAYER_FRICTION = 0.92;
 const PLAYER_TURN_SPEED = 0.045;
 const PLAYER_TURN_FRICTION = 0.77; // Turn inertia friction
-const PLAYER_COLLISION_RADIUS = 0.8;
+const PLAYER_COLLISION_RADIUS = 1.5;
 const OBSTACLE_COLLISION_RADIUS = 1.0;
 
 // Special zones
@@ -70,42 +71,124 @@ export default function RecycleGame() {
     containerRef.current.innerHTML = "";
     containerRef.current.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
     dirLight.position.set(10, 20, 10);
     scene.add(dirLight);
 
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 100),
-      new THREE.MeshStandardMaterial({ color: 0x86efac })
+    /* ===== OCEAN GROUND ===== */
+    const gltfLoaderGround = new GLTFLoader();
+    let oceanModel = null;
+    
+    gltfLoaderGround.load(
+      '/asset/ocean__water_perfect_loop.glb',
+      (gltf) => {
+        oceanModel = gltf.scene;
+        
+        // Scale ocean to fit game area (adjust as needed)
+        oceanModel.scale.set(0.5, 0.5, 0.5);
+        oceanModel.position.set(0, -0.3, 0);
+        
+        // Enable shadows
+        oceanModel.traverse((child) => {
+          if (child.isMesh) {
+            child.receiveShadow = true;
+          }
+        });
+        
+        scene.add(oceanModel);
+        
+        // Store reference for animation
+        state.oceanModel = oceanModel;
+        
+        // Check for animation mixer
+        if (gltf.animations && gltf.animations.length > 0) {
+          const mixer = new THREE.AnimationMixer(oceanModel);
+          gltf.animations.forEach((clip) => {
+            mixer.clipAction(clip).play();
+          });
+          state.oceanMixer = mixer;
+        }
+      },
+      (progress) => {
+        console.log('Loading ocean...', (progress.loaded / progress.total * 100) + '%');
+      },
+      (error) => {
+        console.error('Error loading ocean:', error);
+        // Fallback to simple plane if model fails
+        const fallbackGround = new THREE.Mesh(
+          new THREE.PlaneGeometry(100, 100),
+          new THREE.MeshStandardMaterial({ color: 0x0ea5e9 })
+        );
+        fallbackGround.rotation.x = -Math.PI / 2;
+        scene.add(fallbackGround);
+      }
     );
-    ground.rotation.x = -Math.PI / 2;
-    scene.add(ground);
+
+    // Add a darker underwater plane for depth effect
+    const underwaterPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(200, 200),
+      new THREE.MeshStandardMaterial({ 
+        color: 0x0c4a6e,
+        transparent: true,
+        opacity: 0.8
+      })
+    );
+    underwaterPlane.rotation.x = -Math.PI / 2;
+    underwaterPlane.position.y = -2;
+    scene.add(underwaterPlane);
+
+    // Change background to sky blue
+    scene.background = new THREE.Color(0x7dd3fc);
 
     /* ===== PLAYER ===== */
     const player = new THREE.Group();
+    scene.add(player);
 
     const makeMesh = (geo, color) =>
       new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
 
-    const body = makeMesh(
-      new THREE.CylinderGeometry(0.4, 0.5, 1.4, 8),
-      0x2563eb
+    // Load 3D model for player
+    const gltfLoader = new GLTFLoader();
+    let playerModel = null;
+    
+    gltfLoader.load(
+      '/asset/fishing_boat_low_poly_style.glb',
+      (gltf) => {
+        playerModel = gltf.scene;
+        
+        // Scale and position the model
+        playerModel.scale.set(0.8, 0.8, 0.8); // Adjust scale as needed
+        playerModel.position.y = 0.5; // Adjust height
+        playerModel.rotation.y = Math.PI * 3 / 2; // Face forward
+        
+        // Enable shadows for the model
+        playerModel.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+        
+        player.add(playerModel);
+        
+        // Store reference for hit flash effect
+        state.playerModel = playerModel;
+      },
+      (progress) => {
+        console.log('Loading model...', (progress.loaded / progress.total * 100) + '%');
+      },
+      (error) => {
+        console.error('Error loading model:', error);
+        // Fallback to simple mesh if model fails to load
+        const fallbackBody = makeMesh(
+          new THREE.CylinderGeometry(0.4, 0.5, 1.4, 8),
+          0x2563eb
+        );
+        fallbackBody.position.y = 1;
+        player.add(fallbackBody);
+      }
     );
-    body.position.y = 1;
-
-    const head = makeMesh(new THREE.SphereGeometry(0.35, 16, 16), 0xfcd34d);
-    head.position.y = 2;
-
-    const backpack = makeMesh(new THREE.BoxGeometry(0.5, 0.6, 0.3), 0x14532d);
-    backpack.position.set(0, 1.1, -0.45);
-
-    const nose = makeMesh(new THREE.ConeGeometry(0.15, 0.4, 8), 0xdc2626);
-    nose.position.set(0, 1.2, 0.6);
-    nose.rotation.x = Math.PI / 2;
-
-    player.add(body, head, backpack, nose);
-    scene.add(player);
 
     /* ===== STORAGE ===== */
     const storage = makeMesh(new THREE.CylinderGeometry(2, 2, 1, 32), 0x22c55e);
@@ -395,8 +478,17 @@ export default function RecycleGame() {
       }
     };
 
+    const clock = new THREE.Clock();
+
     const animate = () => {
       if (state.stopped) return;
+
+      const delta = clock.getDelta();
+
+      // Update ocean animation
+      if (state.oceanMixer) {
+        state.oceanMixer.update(delta);
+      }
 
       const isMobileMode = isMobileDevice();
 
@@ -609,10 +701,29 @@ export default function RecycleGame() {
       player.position.copy(nextPosition);
 
       /* ===== HIT FLASH ===== */
+      const isHit = Date.now() - state.hitTime < 200;
       player.traverse((o) => {
-        if (o.isMesh) {
-          o.material.transparent = Date.now() - state.hitTime < 200;
-          o.material.opacity = o.material.transparent ? 0.5 : 1;
+        if (o.isMesh && o.material) {
+          // Clone material if needed to avoid affecting original
+          if (!o.userData.originalMaterial) {
+            o.userData.originalMaterial = o.material.clone();
+          }
+          
+          if (isHit) {
+            o.material.transparent = true;
+            o.material.opacity = 0.5;
+            // Add red tint for damage effect
+            if (o.material.color) {
+              o.material.emissive = new THREE.Color(0xff0000);
+              o.material.emissiveIntensity = 0.5;
+            }
+          } else {
+            o.material.transparent = false;
+            o.material.opacity = 1;
+            if (o.material.emissive) {
+              o.material.emissiveIntensity = 0;
+            }
+          }
         }
       });
 
