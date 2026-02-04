@@ -2,18 +2,17 @@ import React, { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader";
 import * as THREE from "three";
-const clock = new THREE.Clock();
 
 /* ===================== CONSTANTS ===================== */
 const PLAYER_CAPACITY = 5;
-const PLAYER_MAX_HP = 3;
+const PLAYER_MAX_HP = 10;
 
 const PLAYER_MAX_SPEED = 0.2;
 const PLAYER_ACCELERATION = 0.008;
 const PLAYER_FRICTION = 0.92;
 const PLAYER_TURN_SPEED = 0.045;
 const PLAYER_TURN_FRICTION = 0.77; // Turn inertia friction
-const PLAYER_COLLISION_RADIUS = 0.8;
+const PLAYER_COLLISION_RADIUS = 1.5;
 const OBSTACLE_COLLISION_RADIUS = 1.0;
 
 // Special zones
@@ -83,43 +82,143 @@ export default function RecycleGame() {
     containerRef.current.innerHTML = "";
     containerRef.current.appendChild(renderer.domElement);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+    scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+    const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
     dirLight.position.set(10, 20, 10);
     scene.add(dirLight);
 
-    const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 100),
-      new THREE.MeshStandardMaterial({ color: 0x86efac }),
+    /* ===== OCEAN GROUND ===== */
+    const gltfLoaderGround = new GLTFLoader();
+    let oceanModel = null;
+
+    gltfLoaderGround.load(
+      "/asset/ocean__water_perfect_loop.glb",
+      (gltf) => {
+        oceanModel = gltf.scene;
+
+        // Scale ocean to fit game area (adjust as needed)
+        oceanModel.scale.set(0.5, 0.5, 0.5);
+        oceanModel.position.set(0, -0.3, 0);
+
+        // Enable shadows
+        oceanModel.traverse((child) => {
+          if (child.isMesh) {
+            child.receiveShadow = true;
+          }
+        });
+
+        scene.add(oceanModel);
+
+        // Store reference for animation
+        state.oceanModel = oceanModel;
+
+        // Check for animation mixer
+        if (gltf.animations && gltf.animations.length > 0) {
+          const mixer = new THREE.AnimationMixer(oceanModel);
+          gltf.animations.forEach((clip) => {
+            mixer.clipAction(clip).play();
+          });
+          state.oceanMixer = mixer;
+        }
+      },
+      (progress) => {
+        console.log(
+          "Loading ocean...",
+          (progress.loaded / progress.total) * 100 + "%",
+        );
+      },
+      (error) => {
+        console.error("Error loading ocean:", error);
+        // Fallback to simple plane if model fails
+        const fallbackGround = new THREE.Mesh(
+          new THREE.PlaneGeometry(100, 100),
+          new THREE.MeshStandardMaterial({ color: 0x0ea5e9 }),
+        );
+        fallbackGround.rotation.x = -Math.PI / 2;
+        scene.add(fallbackGround);
+      },
     );
-    ground.rotation.x = -Math.PI / 2;
-    scene.add(ground);
+
+    // Add a darker underwater plane for depth effect
+    const underwaterPlane = new THREE.Mesh(
+      new THREE.PlaneGeometry(200, 200),
+      new THREE.MeshStandardMaterial({
+        color: 0x0c4a6e,
+        transparent: true,
+        opacity: 0.8,
+      }),
+    );
+    underwaterPlane.rotation.x = -Math.PI / 2;
+    underwaterPlane.position.y = -2;
+    scene.add(underwaterPlane);
+
+    // Change background to sky blue
+    scene.background = new THREE.Color(0x7dd3fc);
 
     const makeMesh = (geo, color) =>
       new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color }));
 
-    /* ===== STORAGE ===== */
-    const storage = makeMesh(new THREE.CylinderGeometry(2, 2, 1, 32), 0x22c55e);
-    storage.position.set(0, 0.5, -15);
+    /* ===== STORAGE (LIGHTHOUSE) ===== */
+    const storage = new THREE.Group();
+    storage.position.set(0, 0, -15);
     scene.add(storage);
+
+    // Load lighthouse model for storage
+    loadModel("/models/the_lighthouse.glb")
+      .then((model) => {
+        // Scale lighthouse appropriately
+        const box = new THREE.Box3().setFromObject(model);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+
+        // Adjust scale to fit game (you can change this value)
+        const desiredHeight = 8;
+        const scale = desiredHeight / size.y;
+
+        model.scale.setScalar(scale);
+
+        // Position at ground level
+        model.position.y -= box.min.y * scale;
+
+        // Enable shadows
+        model.traverse((child) => {
+          if (child.isMesh) {
+            child.castShadow = true;
+            child.receiveShadow = true;
+          }
+        });
+
+        storage.add(model);
+        console.log("Lighthouse loaded as storage!");
+      })
+      .catch((error) => {
+        console.error("Error loading lighthouse, using fallback:", error);
+        // Fallback to simple cylinder if model fails
+        const fallbackStorage = makeMesh(
+          new THREE.CylinderGeometry(2, 2, 1, 32),
+          0x22c55e,
+        );
+        fallbackStorage.position.y = 0.5;
+        storage.add(fallbackStorage);
+      });
 
     /* ===== PLAYER ===== */
     const player = new THREE.Group();
 
-    loadModel("/models/super_human.glb").then((model) => {
+    loadModel("/models/boat.glb").then((model) => {
       // ===== SCALE THEO CHIỀU CAO CHUẨN TPS =====
       const box = new THREE.Box3().setFromObject(model);
       const size = new THREE.Vector3();
       box.getSize(size);
 
-      const desiredHeight = 1.8;
+      const desiredHeight = 4;
       const scale = desiredHeight / size.y;
 
       model.scale.setScalar(scale);
       model.position.y -= box.min.y * scale;
 
       // ===== QUAY LƯNG VỀ CAMERA =====
-      model.rotation.y = Math.PI;
+      // model.rotation.y = Math.PI;
 
       player.add(model);
 
@@ -142,39 +241,46 @@ export default function RecycleGame() {
       );
     });
 
-    storage.position.set(0, 0, -15);
-
-    // const body = makeMesh(
-    //   new THREE.CylinderGeometry(0.4, 0.5, 1.4, 8),
-    //   0x2563eb,
-    // );
-    // body.position.y = 1;
-
-    // const head = makeMesh(new THREE.SphereGeometry(0.35, 16, 16), 0xfcd34d);
-    // head.position.y = 2;
-
-    // const backpack = makeMesh(new THREE.BoxGeometry(0.5, 0.6, 0.3), 0x14532d);
-    // backpack.position.set(0, 1.1, -0.45);
-
-    // const nose = makeMesh(new THREE.ConeGeometry(0.15, 0.4, 8), 0xdc2626);
-    // nose.position.set(0, 1.2, 0.6);
-    // nose.rotation.x = Math.PI / 2;
-
-    // player.add(body, head, backpack, nose);
     scene.add(player);
 
     /* ===== TRASH ===== */
-    const trash = [];
-    for (let i = 0; i < TOTAL_TRASH; i++) {
-      const t = makeMesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), 0xfacc15);
-      t.position.set(
-        (Math.random() - 0.5) * 30,
-        0.3,
-        (Math.random() - 0.5) * 30,
-      );
-      trash.push(t);
-      scene.add(t);
-    }
+    // ✅ REMOVED: const trash = []; (no longer needed)
+
+    loadModel("/models/trash_bag.glb").then((model) => {
+      const trashPrototype = model;
+
+      trashPrototype.scale.set(0.01, 0.01, 0.01);
+
+      trashPrototype.traverse((c) => {
+        if (c.isMesh) {
+          c.castShadow = true;
+          c.receiveShadow = true;
+          c.material = c.material.clone();
+        }
+      });
+
+      for (let i = 0; i < TOTAL_TRASH; i++) {
+        const t = trashPrototype.clone(true);
+
+        t.position.set(
+          (Math.random() - 0.5) * 30,
+          0.3,
+          (Math.random() - 0.5) * 30,
+        );
+
+        // 👉 TÍNH PICKUP RADIUS THEO MODEL
+        const box = new THREE.Box3().setFromObject(t);
+        const sphere = new THREE.Sphere();
+        box.getBoundingSphere(sphere);
+
+        // lưu vào userData
+        t.userData.pickupRadius = sphere.radius;
+
+        scene.add(t);
+        state.trash.push(t); // ✅ FIXED: Push to state.trash instead of local trash array
+      }
+      console.log(`✅ Loaded ${state.trash.length} trash items!`);
+    });
 
     /* ===== OBSTACLES ===== */
     const obstacles = [];
@@ -408,7 +514,7 @@ export default function RecycleGame() {
       renderer,
       player,
       storage,
-      trash,
+      trash: [], // ✅ Initialize as empty array in state
       obstacles,
       allZones,
       speedZones,
@@ -477,6 +583,8 @@ export default function RecycleGame() {
       }
     };
 
+    const clock = new THREE.Clock();
+
     const animate = () => {
       const isMoving = state.velocity.length() > 0.02;
 
@@ -487,6 +595,13 @@ export default function RecycleGame() {
       }
 
       if (state.stopped) return;
+
+      const delta = clock.getDelta();
+
+      // Update ocean animation
+      if (state.oceanMixer) {
+        state.oceanMixer.update(delta);
+      }
 
       const isMobileMode = isMobileDevice();
 
@@ -656,16 +771,31 @@ export default function RecycleGame() {
 
             // Drop all items from inventory
             if (state.inventory.length > 0) {
-              const playerWorldPos = new THREE.Vector3();
-              player.getWorldPosition(playerWorldPos);
+              // ✅ Clone the inventory array before clearing it
+              const droppedItems = [...state.inventory];
 
-              state.inventory.forEach((item, idx) => {
+              // ✅ Clear inventory FIRST
+              state.inventory = [];
+              setInventoryCount(0);
+
+              // ✅ Then process the dropped items
+              droppedItems.forEach((item, idx) => {
+                // ⭐ KEY FIX: Get world position BEFORE removing from player
+                const worldPos = new THREE.Vector3();
+                item.getWorldPosition(worldPos);
+
+                // Remove from player hierarchy
                 player.remove(item);
-                scene.add(item);
 
-                // Set initial position at player
-                item.position.copy(playerWorldPos);
-                item.position.y = 1.5 + idx * 0.2;
+                // Add to scene at the world position
+                scene.add(item);
+                item.position.copy(worldPos);
+
+                // Reset scale to normal trash size
+                item.scale.set(0.01, 0.01, 0.01);
+
+                // Reset rotation
+                item.rotation.set(0, 0, 0);
 
                 // Calculate scatter direction (away from obstacle)
                 const scatterAngle = Math.random() * Math.PI * 2;
@@ -686,9 +816,6 @@ export default function RecycleGame() {
                 // Add back to trash array so player can pick up again
                 state.trash.push(item);
               });
-
-              state.inventory = [];
-              setInventoryCount(0);
             }
 
             setHp((hp) => {
@@ -704,22 +831,51 @@ export default function RecycleGame() {
 
       // Apply final position after collision resolution
       player.position.copy(nextPosition);
+      player.position.y = 0.3;
 
       /* ===== HIT FLASH ===== */
+      const isHit = Date.now() - state.hitTime < 200;
       player.traverse((o) => {
-        if (o.isMesh) {
-          o.material.transparent = Date.now() - state.hitTime < 200;
-          o.material.opacity = o.material.transparent ? 0.5 : 1;
+        if (o.isMesh && o.material) {
+          // Clone material if needed to avoid affecting original
+          if (!o.userData.originalMaterial) {
+            o.userData.originalMaterial = o.material.clone();
+          }
+
+          if (isHit) {
+            o.material.transparent = true;
+            o.material.opacity = 0.5;
+            // Add red tint for damage effect
+            if (o.material.color) {
+              o.material.emissive = new THREE.Color(0xff0000);
+              o.material.emissiveIntensity = 0.5;
+            }
+          } else {
+            o.material.transparent = false;
+            o.material.opacity = 1;
+            if (o.material.emissive) {
+              o.material.emissiveIntensity = 0;
+            }
+          }
         }
       });
 
-      /* ===== AUTO PICKUP ===== */
+      /* ===== AUTO PICKUP (FIXED) ===== */
       state.trash = state.trash.filter((t) => {
         const wp = new THREE.Vector3();
         t.getWorldPosition(wp);
-        if (wp.distanceTo(player.position) < AUTO_PICKUP_DISTANCE) {
+
+        // ✅ CHECK THEO MẶT PHẲNG XZ (TPS CHUẨN)
+        const dx = wp.x - player.position.x;
+        const dz = wp.z - player.position.z;
+        const horizontalDist = Math.sqrt(dx * dx + dz * dz);
+
+        // ✅ PICKUP DISTANCE THEO KÍCH THƯỚC RÁC + PLAYER
+        const trashRadius = Math.max(t.userData.pickupRadius ?? 0.3, 0.4);
+        const pickupDistance = PLAYER_COLLISION_RADIUS + trashRadius;
+
+        if (horizontalDist < pickupDistance) {
           if (state.inventory.length >= PLAYER_CAPACITY) {
-            // Show inventory full warning (with cooldown)
             const now = Date.now();
             if (now - state.lastInventoryFullWarning > 500) {
               state.lastInventoryFullWarning = now;
@@ -728,16 +884,22 @@ export default function RecycleGame() {
             }
             return true;
           }
+
+          // ===== PICKUP =====
           state.inventory.push(t);
           scene.remove(t);
           player.add(t);
+
           t.position.set(0, 0.8 + state.inventory.length * 0.25, -0.4);
+
           setInventoryCount(state.inventory.length);
-          setInventoryFull(false); // Clear warning if was showing
+          setInventoryFull(false);
           setHudPulse(true);
           setTimeout(() => setHudPulse(false), 150);
+
           return false;
         }
+
         return true;
       });
 
@@ -859,7 +1021,6 @@ export default function RecycleGame() {
         player.position.z,
       );
 
-      const delta = clock.getDelta();
       state.mixer?.update(delta);
 
       renderer.render(scene, camera);
